@@ -1,0 +1,205 @@
+/* build(import) initial tables */
+data schedule;
+	infile datalines dsd;
+	input
+		date : mmddyy6.
+		aircraft : $3.
+		route : $11.
+		flight_num : $4.
+		segment : $7.
+		direction : 1.
+	;
+	format
+		date mmddyy10.
+	;
+	datalines;
+011517,ABC,TLV-NYC-TLV,1001,TLV-NYC,1
+011517,ABC,TLV-NYC-TLV,1002,NYC-TLV,2
+011617,XYZ,TLV-LON-TLV,1003,TLV-LON,1
+011617,XYZ,TLV-LON-TLV,1004,LON-TLV,2
+011717,XYZ,TLV-LAX-TLV,1005,TLV-LAX,1
+011717,XYZ,TLV-LAX-TLV,1006,LAX-TLV,2
+011817,ABC,TLV-PAR-TLV,1007,TLV-PAR,1
+011817,ABC,TLV-PAR-TLV,1008,PAR-TLV,2
+	;
+run;
+
+data booking;
+	infile datalines dsd;
+	input
+		date : mmddyy6.
+		route : $11.
+		flight_num : $4.
+		segment : $7.
+		passengers : 3.
+	;
+	format
+		date mmddyy10.
+	;
+	datalines;
+011517,TLV-NYC-TLV,1001,TLV-NYC,100
+011517,TLV-NYC-TLV,1002,NYC-TLV,120
+011617,TLV-LON-TLV,1003,TLV-LON,150
+011617,TLV-LON-TLV,1004,LON-TLV,200
+011717,TLV-LAX-TLV,1005,TLV-LAX,130
+011717,TLV-LAX-TLV,1006,LAX-TLV,220
+011817,TLV-PAR-TLV,1007,TLV-PAR,170
+011817,TLV-PAR-TLV,1008,PAR-TLV,180
+	;
+run;
+
+data uplift;
+	infile datalines dsd;
+	input
+		date : mmddyy6.
+		aircraft : $3.
+		flight_num : $4.
+		segment : $7.
+		passengers : 3.
+		revenue : 5.
+	;
+	format
+		date mmddyy10.
+	;
+	datalines;
+011517,ABC,1001,TLV-NYC,100,75000
+011517,ABC,1002,NYC-TLV,110,80000
+011617,XYZ,1003,TLV-LON,140,45000
+011617,XYZ,1004,LON-TLV,210,55000
+011717,XYZ,1005,TLV-LAX,130,90000
+011717,XYZ,1006,LAX-TLV,200,95000
+011817,ABC,1007,TLV-PAR,160,65000
+011817,ABC,1008,PAR-TLV,150,60000
+	;
+run;
+
+data costs;
+	infile datalines dsd;
+	input
+		route : $11.
+		crew : 4.
+		air_navigation : 4.
+		ground_charges : 4.
+		catering_per_pax : 2.
+		fuel : 5.
+
+	;
+	datalines;
+TLV-NYC-TLV,8000,2000,3000,40,25000
+TLV-LON-TLV,4000,1000,2000,20,15000
+TLV-LAX-TLV,9000,2000,3000,50,30000
+TLV-PAR-TLV,3000,1000,1000,20,10000
+	;
+run;
+
+data AC;
+	infile datalines dsd;
+	input
+		aircraft : $3.
+		seats : 4.
+	;
+	datalines;
+ABC,300
+XYZ,400
+	;
+run;
+
+/* merge all tables one by one */
+
+proc sql;
+create table sched_book as
+select   coalesce(a.date, b.date) 			  as date
+		,coalesce(a.route, b.route) 		  as route
+		,coalesce(a.flight_num, b.flight_num) as flight_num
+		,coalesce(a.segment, b.segment)		  as segment
+		,a.aircraft
+		,a.direction
+		,b.passengers
+from 	  schedule as a
+full join booking  as b
+on    a.date  	   = b.date
+	& a.route 	   = b.route
+	& a.flight_num = b.flight_num
+	& a.segment	   = b.segment
+;
+
+create table sched_lift as
+select   coalesce(a.date, b.date) 			  as date
+		,coalesce(a.aircraft, b.aircraft) 	  as aircraft
+		,coalesce(a.flight_num, b.flight_num) as flight_num
+		,coalesce(a.segment, b.segment)		  as segment
+		,a.route
+		,a.direction
+		,a.passengers as pass_booked
+		,b.passengers as pass_lifted
+		,b.revenue
+from 	  sched_book as a
+full join uplift     as b
+on    a.date  	   = b.date
+	& a.aircraft   = b.aircraft
+	& a.flight_num = b.flight_num
+	& a.segment	   = b.segment
+;
+
+create table all_unified as
+select   a.*
+		,b.*
+from 	  sched_lift as a
+left join costs      as b
+on    a.route = b.route
+;
+
+create table all_unified2 as
+select   a.*
+		,b.*
+from 	  all_unified as a
+left join AC		  as b
+on    a.aircraft = b.aircraft
+;
+
+quit;
+
+/* add calculations, formats, drop unnecessary  */
+
+data final_report;
+set all_unified2;
+	if pass_lifted < (pass_booked * 0.8)
+	then do;
+		 pass_rep = pass_booked;
+		 rev_rep = revenue * pass_booked / pass_lifted;
+		 end;
+	else do;
+		 pass_rep = pass_lifted;
+		 rev_rep = revenue;
+		 end;
+	drop 
+		pass_booked 
+		pass_lifted revenue;
+	expenses = sum( crew 
+				   ,air_navigation 
+				   ,ground_charges 
+				   ,fuel 
+				   ,pass_rep * catering_per_pax
+				   );
+	drop 
+		catering_per_pax;
+	operating_profit = sum( rev_rep 
+						   ,-expenses
+						   );
+	operating_ratio = rev_rep / expenses;
+	load_factor = pass_rep / seats;
+	format
+		date mmddyy10.
+		operating_ratio 4.2
+		load_factor 4.2		
+		;
+run;
+
+proc sort data = final_report;
+by  date 
+	route 
+	direction;
+
+
+
+
